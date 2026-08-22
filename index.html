@@ -1,1 +1,1150 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>RESELL AI — Gestion achat-revente</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          base: {
+            950: "#08090b", 900: "#101114", 850: "#15171b", 800: "#1b1e23",
+            700: "#25282f", 600: "#33373f", 500: "#4a4f59", 400: "#6b7078",
+            300: "#9a9ea5", 200: "#c7cad0", 100: "#eceef1",
+          },
+          accent: { DEFAULT: "#c9a24b", light: "#e0c17a", dark: "#a3812f" },
+          positive: "#3ddc97",
+          negative: "#ff6b6b",
+        },
+        fontFamily: {
+          sans: ["Inter", "system-ui", "sans-serif"],
+          mono: ["IBM Plex Mono", "monospace"],
+        },
+        borderRadius: { xl2: "1.25rem" },
+        boxShadow: { soft: "0 8px 30px rgba(0,0,0,0.35)" },
+      },
+    },
+  };
+</script>
+<style>
+  html { color-scheme: dark; }
+  body { background:#08090b; -webkit-font-smoothing:antialiased; }
+  ::selection { background: rgba(201,162,75,0.3); color:#eceef1; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:#25282f; border-radius:9999px; }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(4px);} to { opacity:1; transform:none; } }
+  .fade-in { animation: fadeIn .25s ease both; }
+  .modal-backdrop { animation: fadeIn .15s ease both; }
+  input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+  input[type=number]::-webkit-inner-spin-button { opacity: .5; }
+</style>
+</head>
+<body class="font-sans text-base-100 antialiased">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react,stage-3">
+const { useState, useMemo, useEffect, useRef, createContext, useContext } = React;
+
+/* ============================== UTILS ============================== */
+
+function uid(prefix) {
+  return (prefix || "id") + "-" + Math.random().toString(36).slice(2, 9);
+}
+function formatCurrency(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(v);
+}
+function formatPercent(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return v.toFixed(1) + " %";
+}
+function formatDateLocal(dateStr) {
+  if (!dateStr) return "—";
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (!y || !m || !d) return dateStr;
+  return new Date(y, m - 1, d).toLocaleDateString("fr-FR");
+}
+function computeProfit(salePrice, purchasePrice, fees) {
+  fees = fees || 0;
+  return Math.round((salePrice - purchasePrice - fees) * 100) / 100;
+}
+function computeMargin(profit, salePrice) {
+  if (!salePrice) return 0;
+  return Math.round((profit / salePrice) * 1000) / 10;
+}
+function daysAgoStr(n) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+function todayStr() { return daysAgoStr(0); }
+function cn(...xs) { return xs.filter(Boolean).join(" "); }
+
+const STATUS_LABELS = { EN_STOCK: "En stock", RESERVE: "Réservé", VENDU: "Vendu", ARCHIVE: "Archivé" };
+const STATUS_BADGE = {
+  EN_STOCK: "bg-accent/15 text-accent",
+  RESERVE: "bg-amber-500/15 text-amber-400",
+  VENDU: "bg-positive/15 text-positive",
+  ARCHIVE: "bg-base-500/20 text-base-300",
+};
+const CATEGORIES = ["Vêtements", "Chaussures", "Sacs", "Accessoires", "Montres", "Casquettes", "Autre"];
+const CONDITIONS = ["Neuf avec étiquette", "Neuf sans étiquette", "Très bon état", "Bon état", "Satisfaisant"];
+const EVENT_LABELS = {
+  CREATION: "Article créé",
+  MODIFICATION: "Article modifié",
+  CHANGEMENT_STATUT: "Statut modifié",
+  VENTE: "Article vendu",
+  ARCHIVAGE: "Article archivé",
+};
+
+/* ============================== ICONS ============================== */
+
+const IconBase = (props) => ({
+  width: props.width || 22, height: props.height || 22, viewBox: "0 0 24 24",
+  fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round",
+  className: props.className,
+});
+function HomeIcon(p) { return <svg {...IconBase(p)}><path d="M3 11.5 12 4l9 7.5" /><path d="M5.5 10v9a1 1 0 0 0 1 1H9a1 1 0 0 0 1-1v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4a1 1 0 0 0 1 1h2.5a1 1 0 0 0 1-1v-9" /></svg>; }
+function BoxIcon(p) { return <svg {...IconBase(p)}><path d="M21 8 12 3 3 8l9 5 9-5Z" /><path d="M3 8v8l9 5 9-5V8" /><path d="M12 13v8" /></svg>; }
+function WalletIcon(p) { return <svg {...IconBase(p)}><rect x="3" y="6" width="18" height="13" rx="2" /><path d="M3 10h18" /><circle cx="16.5" cy="14" r="1" fill="currentColor" stroke="none" /></svg>; }
+function ChartIcon(p) { return <svg {...IconBase(p)}><path d="M4 20V10" /><path d="M11 20V4" /><path d="M18 20v-7" /></svg>; }
+function SettingsIcon(p) { return <svg {...IconBase(p)}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.14.36.4.68.75.87.31.18.68.28 1.06.28H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1Z" /></svg>; }
+function PlusIcon(p) { return <svg {...IconBase(p)}><path d="M12 5v14M5 12h14" /></svg>; }
+function SearchIcon(p) { return <svg {...IconBase(p)}><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>; }
+function XIcon(p) { return <svg {...IconBase(p)}><path d="M18 6 6 18M6 6l12 12" /></svg>; }
+function TrashIcon(p) { return <svg {...IconBase(p)}><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" /><path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3" /></svg>; }
+function EditIcon(p) { return <svg {...IconBase(p)}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>; }
+function ArrowLeftIcon(p) { return <svg {...IconBase(p)}><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>; }
+function ImageIcon(p) { return <svg {...IconBase(p)}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></svg>; }
+function TagIcon(p) { return <svg {...IconBase(p)}><path d="M12 2H2v10l9.29 9.29a2 2 0 0 0 2.82 0l7.18-7.18a2 2 0 0 0 0-2.82L12 2Z" /><path d="M7 7h.01" /></svg>; }
+
+const NAV_ITEMS = [
+  { page: "dashboard", label: "Accueil", icon: HomeIcon },
+  { page: "stock", label: "Stock", icon: BoxIcon },
+  { page: "sales", label: "Ventes", icon: WalletIcon },
+  { page: "analytics", label: "Analytics", icon: ChartIcon },
+  { page: "settings", label: "Paramètres", icon: SettingsIcon },
+];
+
+/* ============================== UI PRIMITIVES ============================== */
+
+function Card({ className, children }) {
+  return <div className={cn("rounded-xl2 border border-base-700 bg-base-900 p-5 shadow-soft", className)}>{children}</div>;
+}
+function Badge({ className, children }) {
+  return <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium", className)}>{children}</span>;
+}
+function StatCard({ label, value }) {
+  return (
+    <div className="rounded-xl2 border border-base-700 bg-base-900 p-4">
+      <p className="text-xs text-base-400">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-base-100">{value}</p>
+    </div>
+  );
+}
+function EmptyState({ title, description, action }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 rounded-xl2 border border-dashed border-base-700 px-6 py-10 text-center">
+      <p className="text-sm font-medium text-base-200">{title}</p>
+      {description && <p className="max-w-xs text-xs text-base-400">{description}</p>}
+      {action && <div className="mt-2">{action}</div>}
+    </div>
+  );
+}
+function Field({ label, children }) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="text-xs font-medium text-base-300">{label}</span>
+      {children}
+    </label>
+  );
+}
+const inputCls = "w-full rounded-xl border border-base-600 bg-base-850 px-3.5 py-2.5 text-sm text-base-100 outline-none transition-colors placeholder:text-base-500 focus:border-accent";
+function Input({ label, className, ...props }) {
+  const el = <input className={cn(inputCls, className)} {...props} />;
+  return label ? <Field label={label}>{el}</Field> : el;
+}
+function Textarea({ label, className, ...props }) {
+  const el = <textarea className={cn(inputCls, "resize-none", className)} {...props} />;
+  return label ? <Field label={label}>{el}</Field> : el;
+}
+function Select({ label, className, children, ...props }) {
+  const el = <select className={cn(inputCls, "appearance-none", className)} {...props}>{children}</select>;
+  return label ? <Field label={label}>{el}</Field> : el;
+}
+function Button({ variant = "primary", full, className, children, ...props }) {
+  const variants = {
+    primary: "bg-accent text-base-950 hover:bg-accent-light",
+    secondary: "bg-base-800 text-base-100 hover:bg-base-700 border border-base-600",
+    ghost: "bg-transparent text-base-300 hover:bg-base-800",
+    danger: "bg-negative/10 text-negative hover:bg-negative/20 border border-negative/30",
+  };
+  return (
+    <button
+      className={cn(
+        "inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        variants[variant], full && "w-full", className
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ============================== TOAST ============================== */
+
+const ToastCtx = createContext(() => {});
+function useToast() { return useContext(ToastCtx); }
+function ToastHost({ toast }) {
+  if (!toast) return null;
+  return (
+    <div className="fixed inset-x-0 bottom-20 z-[60] flex justify-center px-4 md:bottom-6">
+      <div className="fade-in rounded-full border border-base-700 bg-base-850 px-4 py-2.5 text-sm text-base-100 shadow-soft">
+        {toast}
+      </div>
+    </div>
+  );
+}
+
+/* ============================== PERFORMANCE CHART (SVG maison) ============================== */
+
+const RANGES = [{ label: "7 j", days: 7 }, { label: "30 j", days: 30 }, { label: "3 mois", days: 90 }, { label: "12 mois", days: 365 }];
+
+function PerformanceChart({ data }) {
+  const [rangeIdx, setRangeIdx] = useState(1);
+  const filtered = useMemo(() => {
+    const days = RANGES[rangeIdx].days;
+    const cutoff = new Date(); cutoff.setHours(0, 0, 0, 0); cutoff.setDate(cutoff.getDate() - days);
+    return data.filter((d) => {
+      const [y, m, day] = d.date.split("-").map(Number);
+      return new Date(y, m - 1, day) >= cutoff;
+    });
+  }, [data, rangeIdx]);
+
+  return (
+    <div className="rounded-xl2 border border-base-700 bg-base-900 p-5 shadow-soft">
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-sm font-medium text-base-100">Performance</h3>
+        <div className="flex gap-1 rounded-lg bg-base-850 p-1">
+          {RANGES.map((r, i) => (
+            <button key={r.label} onClick={() => setRangeIdx(i)}
+              className={cn("rounded-md px-2.5 py-1 text-xs font-medium transition-colors", i === rangeIdx ? "bg-accent text-base-950" : "text-base-400 hover:text-base-100")}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {filtered.length === 0 ? (
+        <div className="flex h-56 items-center justify-center text-sm text-base-500">Pas encore de ventes sur cette période</div>
+      ) : (
+        <AreaChartSVG data={filtered} />
+      )}
+    </div>
+  );
+}
+
+function AreaChartSVG({ data }) {
+  const W = 640, H = 224, padL = 40, padR = 8, padT = 12, padB = 22;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const maxVal = Math.max(1, ...data.map((d) => Math.max(d.revenue, d.profit))) * 1.15;
+  const xAt = (i) => padL + (data.length === 1 ? innerW / 2 : (i / (data.length - 1)) * innerW);
+  const yAt = (v) => padT + innerH - (v / maxVal) * innerH;
+
+  function areaPath(key) {
+    const pts = data.map((d, i) => [xAt(i), yAt(d[key])]);
+    let d0 = "M" + pts.map((p) => p.join(",")).join(" L");
+    d0 += ` L${xAt(data.length - 1)},${padT + innerH} L${xAt(0)},${padT + innerH} Z`;
+    return d0;
+  }
+  function linePath(key) {
+    const pts = data.map((d, i) => [xAt(i), yAt(d[key])]);
+    return "M" + pts.map((p) => p.join(",")).join(" L");
+  }
+  const gridLines = [0.25, 0.5, 0.75, 1];
+  const labelIdxs = data.length <= 1 ? [0] : [0, Math.floor((data.length - 1) / 2), data.length - 1];
+
+  return (
+    <div className="h-56 w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#c9a24b" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#c9a24b" stopOpacity="0" />
+          </linearGradient>
+          <linearGradient id="profGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#3ddc97" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#3ddc97" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {gridLines.map((g) => (
+          <line key={g} x1={padL} x2={W - padR} y1={padT + innerH * (1 - g)} y2={padT + innerH * (1 - g)} stroke="#25282f" strokeDasharray="3 3" />
+        ))}
+        <path d={areaPath("revenue")} fill="url(#revGrad)" />
+        <path d={areaPath("profit")} fill="url(#profGrad)" />
+        <path d={linePath("revenue")} fill="none" stroke="#c9a24b" strokeWidth="2" />
+        <path d={linePath("profit")} fill="none" stroke="#3ddc97" strokeWidth="2" />
+        {labelIdxs.map((i) => (
+          <text key={i} x={xAt(i)} y={H - 4} fontSize="10" fill="#6b7078" textAnchor={i === 0 ? "start" : i === data.length - 1 ? "end" : "middle"}>
+            {formatDateLocal(data[i].date)}
+          </text>
+        ))}
+      </svg>
+      <div className="mt-1 flex items-center gap-4 text-[11px] text-base-400">
+        <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-accent" /> Chiffre d'affaires</span>
+        <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-positive" /> Bénéfice</span>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== SEED DATA ============================== */
+
+function buildInventoryEvents(product, saleDate) {
+  const events = [{ id: uid("ev"), event_type: "CREATION", created_at: product.purchase_date }];
+  if (product.status === "VENDU" && saleDate) events.push({ id: uid("ev"), event_type: "VENTE", created_at: saleDate });
+  if (product.status === "ARCHIVE") events.push({ id: uid("ev"), event_type: "ARCHIVAGE", created_at: daysAgoStr(2) });
+  return events;
+}
+
+function seedPlatforms() {
+  return [
+    { id: "plat-vinted", name: "Vinted", fee_percent: 0 },
+    { id: "plat-lbc", name: "Leboncoin", fee_percent: 0 },
+    { id: "plat-ebay", name: "eBay", fee_percent: 10 },
+    { id: "plat-vc", name: "Vestiaire Collective", fee_percent: 15 },
+    { id: "plat-shop", name: "Boutique / en main propre", fee_percent: 0 },
+  ];
+}
+
+function seedData() {
+  const platforms = seedPlatforms();
+  const byId = Object.fromEntries(platforms.map((p) => [p.id, p]));
+
+  const raw = [
+    { title: "Sac à main cuir noir", brand: "Chanel", category: "Sacs", size: null, color: "Noir", condition: "Très bon état", purchase_price: 450, expected_sale_price: 780, status: "VENDU", location: "Coffre", sale: { platform: "plat-vc", price: 760, shipping: 12, daysAgo: 62 }, purchaseDaysAgo: 95 },
+    { title: "Sneakers édition limitée", brand: "Nike", category: "Chaussures", size: "42", color: "Blanc", condition: "Neuf avec étiquette", purchase_price: 120, expected_sale_price: 220, status: "EN_STOCK", location: "Étagère A1", purchaseDaysAgo: 14 },
+    { title: "Montre chronographe", brand: "Tissot", category: "Montres", size: null, color: "Acier", condition: "Très bon état", purchase_price: 300, expected_sale_price: 480, status: "RESERVE", location: "Coffre", platform_id: "plat-ebay", purchaseDaysAgo: 20 },
+    { title: "Casquette brodée", brand: "New Era", category: "Casquettes", size: null, color: "Noir", condition: "Neuf sans étiquette", purchase_price: 15, expected_sale_price: 35, status: "EN_STOCK", location: "Étagère B2", purchaseDaysAgo: 8 },
+    { title: "Veste en jean vintage", brand: "Levi's", category: "Vêtements", size: "M", color: "Bleu", condition: "Bon état", purchase_price: 25, expected_sale_price: 65, status: "VENDU", location: null, sale: { platform: "plat-vinted", price: 60, shipping: 6, daysAgo: 40 }, purchaseDaysAgo: 70 },
+    { title: "Polo piqué", brand: "Ralph Lauren", category: "Vêtements", size: "L", color: "Marine", condition: "Très bon état", purchase_price: 18, expected_sale_price: 45, status: "VENDU", location: null, sale: { platform: "plat-lbc", price: 42, shipping: 0, daysAgo: 25 }, purchaseDaysAgo: 55 },
+    { title: "Sac bandoulière", brand: "Dior", category: "Sacs", size: null, color: "Beige", condition: "Bon état", purchase_price: 620, expected_sale_price: 950, status: "EN_STOCK", location: "Coffre", purchaseDaysAgo: 6 },
+    { title: "Baskets Superstar", brand: "Adidas", category: "Chaussures", size: "41", color: "Blanc/Noir", condition: "Neuf sans étiquette", purchase_price: 45, expected_sale_price: 90, status: "VENDU", location: null, sale: { platform: "plat-vinted", price: 85, shipping: 5, daysAgo: 10 }, purchaseDaysAgo: 30 },
+    { title: "Robe imprimée", brand: "Zara", category: "Vêtements", size: "S", color: "Multicolore", condition: "Bon état", purchase_price: 8, expected_sale_price: 22, status: "ARCHIVE", location: "Carton 3", purchaseDaysAgo: 120 },
+    { title: "Doudoune", brand: "The North Face", category: "Vêtements", size: "M", color: "Kaki", condition: "Très bon état", purchase_price: 70, expected_sale_price: 140, status: "EN_STOCK", location: "Étagère A2", purchaseDaysAgo: 3 },
+    { title: "Montre digitale", brand: "Casio", category: "Montres", size: null, color: "Noir", condition: "Neuf avec étiquette", purchase_price: 25, expected_sale_price: 55, status: "VENDU", location: null, sale: { platform: "plat-ebay", price: 52, shipping: 4, daysAgo: 5 }, purchaseDaysAgo: 18 },
+    { title: "Sac week-end", brand: "Louis Vuitton", category: "Sacs", size: null, color: "Marron", condition: "Satisfaisant", purchase_price: 380, expected_sale_price: 620, status: "RESERVE", location: "Coffre", platform_id: "plat-vc", purchaseDaysAgo: 45 },
+    { title: "Baskets Chuck 70", brand: "Converse", category: "Chaussures", size: "39", color: "Noir", condition: "Neuf avec étiquette", purchase_price: 35, expected_sale_price: 70, status: "VENDU", location: null, sale: { platform: "plat-vinted", price: 68, shipping: 5, daysAgo: 90 }, purchaseDaysAgo: 130 },
+    { title: "Polaire technique", brand: "Patagonia", category: "Vêtements", size: "L", color: "Vert", condition: "Bon état", purchase_price: 30, expected_sale_price: 60, status: "EN_STOCK", location: "Étagère B1", purchaseDaysAgo: 11 },
+    { title: "Ceinture cuir", brand: "Hermès", category: "Accessoires", size: null, color: "Noir", condition: "Très bon état", purchase_price: 150, expected_sale_price: 320, status: "VENDU", location: null, sale: { platform: "plat-vc", price: 300, shipping: 8, daysAgo: 130 }, purchaseDaysAgo: 165 },
+  ];
+
+  const products = [];
+  const sales = [];
+
+  raw.forEach((r) => {
+    const id = uid("prod");
+    const purchase_date = daysAgoStr(r.purchaseDaysAgo);
+    let product = {
+      id, title: r.title, description: null, brand: r.brand, category: r.category, subcategory: null,
+      size: r.size, condition: r.condition, color: r.color, purchase_price: r.purchase_price,
+      expected_sale_price: r.expected_sale_price, actual_sale_price: null, profit: null,
+      platform_id: r.platform_id || null, location: r.location, status: r.status,
+      purchase_date, sale_date: null, notes: null, events: [],
+    };
+
+    if (r.sale) {
+      const platform = byId[r.sale.platform];
+      const platform_fees = Math.round(r.sale.price * (platform.fee_percent / 100) * 100) / 100;
+      const shipping_fees = r.sale.shipping;
+      const net_profit = computeProfit(r.sale.price, r.purchase_price, platform_fees + shipping_fees);
+      const margin_percent = computeMargin(net_profit, r.sale.price);
+      const sale_date = daysAgoStr(r.sale.daysAgo);
+      product.actual_sale_price = r.sale.price;
+      product.profit = net_profit;
+      product.sale_date = sale_date;
+      product.platform_id = r.sale.platform;
+      sales.push({
+        id: uid("sale"), product_id: id, product_title: r.title, product_brand: r.brand,
+        platform_id: r.sale.platform, platform_name: platform.name, sale_price: r.sale.price,
+        purchase_price: r.purchase_price, platform_fees, shipping_fees, net_profit, margin_percent, sale_date,
+      });
+      product.events = buildInventoryEvents(product, sale_date);
+    } else {
+      product.events = buildInventoryEvents(product, null);
+    }
+    products.push(product);
+  });
+
+  sales.sort((a, b) => b.sale_date.localeCompare(a.sale_date));
+  return { products, sales, platforms };
+}
+
+/* ============================== LAYOUT ============================== */
+
+function Sidebar({ page, navigate }) {
+  return (
+    <aside className="hidden w-64 shrink-0 flex-col border-r border-base-800 bg-base-950 px-4 py-6 md:flex">
+      <div className="mb-8 px-2">
+        <p className="text-lg font-semibold tracking-tight text-base-100">RESELL <span className="text-accent">AI</span></p>
+        <p className="mt-0.5 text-[11px] text-base-500">Démo — données fictives</p>
+      </div>
+      <nav className="flex-1 space-y-1">
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const active = page === item.page;
+          return (
+            <button key={item.page} onClick={() => navigate(item.page)}
+              className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-colors",
+                active ? "bg-accent/15 text-accent" : "text-base-300 hover:bg-base-800 hover:text-base-100")}>
+              <Icon width={19} height={19} />
+              {item.label}
+            </button>
+          );
+        })}
+      </nav>
+      <div className="space-y-3 border-t border-base-800 pt-4">
+        <p className="truncate px-2 text-xs text-base-400">demo@resellai.app</p>
+        <button className="w-full rounded-xl px-3 py-2.5 text-left text-sm text-base-400 hover:bg-base-800 hover:text-base-100" onClick={() => navigate("settings")}>
+          Se déconnecter
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function BottomNav({ page, navigate }) {
+  const LEFT = NAV_ITEMS.slice(0, 2), RIGHT = NAV_ITEMS.slice(2, 4);
+  const NavLink = ({ item }) => {
+    const Icon = item.icon, active = page === item.page;
+    return (
+      <button onClick={() => navigate(item.page)} className={cn("flex flex-col items-center gap-1 px-3 py-1.5 text-[11px] font-medium", active ? "text-accent" : "text-base-400")}>
+        <Icon width={22} height={22} />
+        {item.label}
+      </button>
+    );
+  };
+  return (
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-base-800 bg-base-950/95 backdrop-blur md:hidden">
+      <div className="relative mx-auto flex max-w-md items-center justify-between px-4 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2">
+        {LEFT.map((item) => <NavLink key={item.page} item={item} />)}
+        <button onClick={() => navigate("stock-new")} aria-label="Ajouter un article"
+          className="-mt-8 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-base-950 shadow-soft active:scale-95">
+          <PlusIcon width={26} height={26} />
+        </button>
+        {RIGHT.map((item) => <NavLink key={item.page} item={item} />)}
+      </div>
+    </nav>
+  );
+}
+
+/* ============================== PAGES ============================== */
+
+function DashboardPage({ products, sales, navigate }) {
+  const data = useMemo(() => {
+    const revenue = sales.reduce((s, x) => s + x.sale_price, 0);
+    const profit = sales.reduce((s, x) => s + x.net_profit, 0);
+    const stockItems = products.filter((p) => p.status === "EN_STOCK" || p.status === "RESERVE");
+    const stockValue = stockItems.reduce((s, p) => s + p.purchase_price, 0);
+    const avgMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
+    const byDay = new Map();
+    sales.forEach((s) => {
+      const e = byDay.get(s.sale_date) || { revenue: 0, profit: 0 };
+      e.revenue += s.sale_price; e.profit += s.net_profit;
+      byDay.set(s.sale_date, e);
+    });
+    const chartData = Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date, ...v }));
+    const recentSales = [...sales].sort((a, b) => b.sale_date.localeCompare(a.sale_date)).slice(0, 5);
+    const recentProducts = [...products].sort((a, b) => b.purchase_date.localeCompare(a.purchase_date)).slice(0, 5);
+    return { revenue, profit, salesCount: sales.length, stockCount: stockItems.length, stockValue, avgMargin, chartData, recentSales, recentProducts };
+  }, [products, sales]);
+
+  return (
+    <div className="space-y-6 fade-in">
+      <div>
+        <h1 className="text-xl font-semibold text-base-100">Tableau de bord</h1>
+        <p className="text-sm text-base-400">Vue d'ensemble de ton activité</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        <StatCard label="Chiffre d'affaires" value={formatCurrency(data.revenue)} />
+        <StatCard label="Bénéfice" value={formatCurrency(data.profit)} />
+        <StatCard label="Ventes" value={String(data.salesCount)} />
+        <StatCard label="Articles en stock" value={String(data.stockCount)} />
+        <StatCard label="Valeur du stock" value={formatCurrency(data.stockValue)} />
+        <StatCard label="Marge moyenne" value={formatPercent(data.avgMargin)} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Button full variant="primary" onClick={() => navigate("stock-new")}>+ Ajouter un article</Button>
+        <Button full variant="secondary" onClick={() => navigate("stock", { status: "EN_STOCK" })}>Choisir un article à vendre</Button>
+        <Button full variant="secondary" onClick={() => navigate("stock")}>Voir mon stock</Button>
+        <Button full variant="secondary" onClick={() => navigate("analytics")}>Voir mes statistiques</Button>
+      </div>
+
+      <PerformanceChart data={data.chartData} />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card className="space-y-3">
+          <h3 className="text-sm font-medium text-base-100">Ventes récentes</h3>
+          {data.recentSales.length === 0 ? <EmptyState title="Aucune vente pour l'instant" /> : (
+            <ul className="space-y-2">
+              {data.recentSales.map((s) => (
+                <li key={s.id} className="flex items-center justify-between text-sm">
+                  <span className="truncate text-base-200">{s.product_title}</span>
+                  <span className={s.net_profit >= 0 ? "font-medium text-positive" : "font-medium text-negative"}>{formatCurrency(s.net_profit)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+        <Card className="space-y-3">
+          <h3 className="text-sm font-medium text-base-100">Articles récents</h3>
+          {data.recentProducts.length === 0 ? <EmptyState title="Aucun article pour l'instant" /> : (
+            <ul className="space-y-2">
+              {data.recentProducts.map((p) => (
+                <li key={p.id} className="flex items-center justify-between text-sm">
+                  <button onClick={() => navigate("stock-detail", { id: p.id })} className="truncate text-base-200 hover:text-accent">{p.title}</button>
+                  <Badge className={STATUS_BADGE[p.status]}>{STATUS_LABELS[p.status]}</Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ProductThumb({ size }) {
+  return (
+    <div className={cn("flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-base-800 text-base-600", size)}>
+      <ImageIcon width={20} height={20} />
+    </div>
+  );
+}
+
+function ProductCard({ product, navigate }) {
+  const potentialProfit = product.expected_sale_price != null ? product.expected_sale_price - product.purchase_price : null;
+  return (
+    <button onClick={() => navigate("stock-detail", { id: product.id })}
+      className="flex w-full items-center gap-3 rounded-xl2 border border-base-700 bg-base-900 p-3 text-left transition-colors hover:border-base-600">
+      <ProductThumb size="h-16 w-16" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-medium text-base-100">{product.title}</p>
+          <Badge className={STATUS_BADGE[product.status]}>{STATUS_LABELS[product.status]}</Badge>
+        </div>
+        <p className="truncate text-xs text-base-400">{[product.brand, product.category, product.size].filter(Boolean).join(" · ") || "—"}</p>
+      </div>
+      <div className="shrink-0 text-right">
+        <p className="text-sm font-semibold text-base-100">{formatCurrency(product.purchase_price)}</p>
+        {potentialProfit !== null && product.status !== "VENDU" && (
+          <p className={potentialProfit >= 0 ? "text-xs text-positive" : "text-xs text-negative"}>
+            {potentialProfit >= 0 ? "+" : ""}{formatCurrency(potentialProfit)} prévu
+          </p>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function StockPage({ products, navigate, initialStatus }) {
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState(initialStatus || "");
+
+  const filtered = useMemo(() => {
+    return products
+      .filter((p) => (q ? p.title.toLowerCase().includes(q.toLowerCase()) : true))
+      .filter((p) => (status ? p.status === status : true))
+      .sort((a, b) => b.purchase_date.localeCompare(a.purchase_date));
+  }, [products, q, status]);
+
+  return (
+    <div className="space-y-5 fade-in">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-base-100">Stock</h1>
+          <p className="text-sm text-base-400">{filtered.length} article(s)</p>
+        </div>
+        <Button className="hidden md:inline-flex" onClick={() => navigate("stock-new")}>+ Ajouter un article</Button>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <div className="relative min-w-0 flex-1">
+          <SearchIcon width={16} height={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base-500" />
+          <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher un article…"
+            className="w-full rounded-xl border border-base-600 bg-base-850 py-2.5 pl-9 pr-3.5 text-sm text-base-100 outline-none focus:border-accent" />
+        </div>
+        <select value={status} onChange={(e) => setStatus(e.target.value)}
+          className="rounded-xl border border-base-600 bg-base-850 px-3 py-2.5 text-sm text-base-100 outline-none">
+          <option value="">Tous les statuts</option>
+          <option value="EN_STOCK">En stock</option>
+          <option value="RESERVE">Réservé</option>
+          <option value="VENDU">Vendu</option>
+          <option value="ARCHIVE">Archivé</option>
+        </select>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState title="Aucun article trouvé" description="Ajoute ton premier article pour commencer à suivre ton stock."
+          action={<Button onClick={() => navigate("stock-new")}>+ Ajouter un article</Button>} />
+      ) : (
+        <div className="space-y-2">{filtered.map((p) => <ProductCard key={p.id} product={p} navigate={navigate} />)}</div>
+      )}
+    </div>
+  );
+}
+
+function ProductForm({ product, platforms, onSubmit, onCancel }) {
+  const isEdit = !!product;
+  const [form, setForm] = useState(() => ({
+    title: product?.title || "", description: product?.description || "", brand: product?.brand || "",
+    category: product?.category || "", subcategory: product?.subcategory || "", size: product?.size || "",
+    color: product?.color || "", condition: product?.condition || "", purchase_price: product?.purchase_price ?? "",
+    expected_sale_price: product?.expected_sale_price ?? "", platform_id: product?.platform_id || "",
+    location: product?.location || "", notes: product?.notes || "",
+  }));
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const purchasePrice = Number(form.purchase_price) || 0;
+  const expectedPrice = Number(form.expected_sale_price) || 0;
+  const profit = expectedPrice - purchasePrice;
+  const margin = expectedPrice > 0 ? (profit / expectedPrice) * 100 : 0;
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!form.title.trim() || form.purchase_price === "") return;
+    onSubmit({
+      ...form,
+      purchase_price: purchasePrice,
+      expected_sale_price: form.expected_sale_price === "" ? null : expectedPrice,
+      platform_id: form.platform_id || null,
+    });
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-5">
+      <Card className="space-y-4">
+        <Input label="Titre *" value={form.title} onChange={set("title")} placeholder="Ex : Sac à main cuir noir" required />
+        <Textarea label="Description" rows={3} value={form.description} onChange={set("description")} placeholder="Détails, particularités…" />
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="Marque" value={form.brand} onChange={set("brand")} placeholder="Ex : Chanel" />
+          <Select label="Catégorie" value={form.category} onChange={set("category")}>
+            <option value="">—</option>
+            {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </Select>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <Input label="Sous-catégorie" value={form.subcategory} onChange={set("subcategory")} />
+          <Input label="Taille" value={form.size} onChange={set("size")} />
+          <Input label="Couleur" value={form.color} onChange={set("color")} />
+        </div>
+        <Select label="État" value={form.condition} onChange={set("condition")}>
+          <option value="">—</option>
+          {CONDITIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+        </Select>
+      </Card>
+
+      <Card className="space-y-4">
+        <h3 className="text-sm font-medium text-base-100">Prix</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="Prix d'achat *" type="number" step="0.01" min="0" value={form.purchase_price} onChange={set("purchase_price")} required />
+          <Input label="Prix de vente prévu" type="number" step="0.01" min="0" value={form.expected_sale_price} onChange={set("expected_sale_price")} />
+        </div>
+        <div className="flex items-center justify-between rounded-xl bg-base-850 px-4 py-3 text-sm">
+          <span className="text-base-400">Bénéfice potentiel</span>
+          <span className={profit >= 0 ? "font-semibold text-positive" : "font-semibold text-negative"}>
+            {formatCurrency(profit)} ({formatPercent(margin)})
+          </span>
+        </div>
+      </Card>
+
+      <Card className="space-y-4">
+        <h3 className="text-sm font-medium text-base-100">Logistique</h3>
+        <Select label="Plateforme" value={form.platform_id} onChange={set("platform_id")}>
+          <option value="">—</option>
+          {platforms.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </Select>
+        <Input label="Emplacement" value={form.location} onChange={set("location")} placeholder="Ex : Étagère A2" />
+        <Textarea label="Notes" rows={2} value={form.notes} onChange={set("notes")} />
+      </Card>
+
+      <div className="flex gap-2">
+        <Button type="button" variant="ghost" onClick={onCancel}>Annuler</Button>
+        <Button type="submit" full>{isEdit ? "Enregistrer les modifications" : "Ajouter au stock"}</Button>
+      </div>
+    </form>
+  );
+}
+
+function StockNewPage({ platforms, onCreate, navigate }) {
+  return (
+    <div className="mx-auto max-w-2xl space-y-5 fade-in">
+      <button onClick={() => navigate("stock")} className="flex items-center gap-1.5 text-sm text-base-400 hover:text-base-100">
+        <ArrowLeftIcon width={16} height={16} /> Retour au stock
+      </button>
+      <h1 className="text-xl font-semibold text-base-100">Ajouter un article</h1>
+      <ProductForm platforms={platforms} onSubmit={onCreate} onCancel={() => navigate("stock")} />
+    </div>
+  );
+}
+
+function StockEditPage({ product, platforms, onUpdate, navigate }) {
+  if (!product) return <EmptyState title="Article introuvable" />;
+  return (
+    <div className="mx-auto max-w-2xl space-y-5 fade-in">
+      <button onClick={() => navigate("stock-detail", { id: product.id })} className="flex items-center gap-1.5 text-sm text-base-400 hover:text-base-100">
+        <ArrowLeftIcon width={16} height={16} /> Retour à l'article
+      </button>
+      <h1 className="text-xl font-semibold text-base-100">Modifier l'article</h1>
+      <ProductForm product={product} platforms={platforms} onSubmit={(data) => onUpdate(product.id, data)} onCancel={() => navigate("stock-detail", { id: product.id })} />
+    </div>
+  );
+}
+
+function SellModal({ product, platforms, onClose, onConfirm }) {
+  const [platformId, setPlatformId] = useState("");
+  const [salePrice, setSalePrice] = useState("");
+  const [platformFees, setPlatformFees] = useState(0);
+  const [shippingFees, setShippingFees] = useState(0);
+  const [saleDate, setSaleDate] = useState(todayStr());
+  const [error, setError] = useState("");
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const price = Number(salePrice);
+    if (!salePrice || price < 0) { setError("Indique un prix de vente valide."); return; }
+    onConfirm({
+      platform_id: platformId || null, sale_price: price,
+      platform_fees: Number(platformFees) || 0, shipping_fees: Number(shippingFees) || 0, sale_date: saleDate,
+    });
+  }
+
+  return (
+    <div className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm rounded-xl2 border border-base-700 bg-base-900 shadow-soft" onClick={(e) => e.stopPropagation()}>
+        <form onSubmit={handleSubmit} className="space-y-4 p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-base-100">Enregistrer une vente</h2>
+            <button type="button" onClick={onClose} className="text-base-400 hover:text-base-100"><XIcon width={18} height={18} /></button>
+          </div>
+          <p className="text-xs text-base-400 -mt-2">{product.title}</p>
+
+          <Select label="Plateforme" value={platformId} onChange={(e) => setPlatformId(e.target.value)}>
+            <option value="">—</option>
+            {platforms.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </Select>
+          <Input label="Prix de vente *" type="number" step="0.01" min="0" value={salePrice} onChange={(e) => setSalePrice(e.target.value)} required />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Frais plateforme" type="number" step="0.01" min="0" value={platformFees} onChange={(e) => setPlatformFees(e.target.value)} />
+            <Input label="Frais d'expédition" type="number" step="0.01" min="0" value={shippingFees} onChange={(e) => setShippingFees(e.target.value)} />
+          </div>
+          <Input label="Date de vente *" type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} required />
+
+          {error && <p className="text-sm text-negative">{error}</p>}
+
+          <div className="flex gap-2 pt-1">
+            <Button type="button" variant="ghost" full onClick={onClose}>Annuler</Button>
+            <Button type="submit" full>Confirmer la vente</Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function StockDetailPage({ product, platforms, navigate, onSell, onArchive, onDelete }) {
+  const [sellOpen, setSellOpen] = useState(false);
+  if (!product) return <EmptyState title="Article introuvable" />;
+
+  const potentialProfit = product.expected_sale_price != null ? product.expected_sale_price - product.purchase_price : null;
+  const platformName = platforms.find((p) => p.id === product.platform_id)?.name || "—";
+
+  return (
+    <div className="mx-auto max-w-2xl space-y-5 fade-in">
+      <button onClick={() => navigate("stock")} className="flex items-center gap-1.5 text-sm text-base-400 hover:text-base-100">
+        <ArrowLeftIcon width={16} height={16} /> Retour au stock
+      </button>
+
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="mb-1 flex items-center gap-2">
+            <h1 className="text-xl font-semibold text-base-100">{product.title}</h1>
+            <Badge className={STATUS_BADGE[product.status]}>{STATUS_LABELS[product.status]}</Badge>
+          </div>
+          <p className="text-sm text-base-400">{[product.brand, product.category, product.size, product.color].filter(Boolean).join(" · ") || "—"}</p>
+        </div>
+        {(product.status === "EN_STOCK" || product.status === "RESERVE") && (
+          <Button onClick={() => setSellOpen(true)}>Vendre</Button>
+        )}
+      </div>
+
+      <div className="flex h-32 items-center justify-center rounded-xl2 border border-dashed border-base-700 text-sm text-base-500">
+        <div className="flex flex-col items-center gap-1.5">
+          <ImageIcon width={22} height={22} />
+          Aucune photo — ajoutable depuis « Modifier »
+        </div>
+      </div>
+
+      <Card className="grid grid-cols-2 gap-4 text-sm">
+        <div><p className="text-xs text-base-400">Prix d'achat</p><p className="font-medium text-base-100">{formatCurrency(product.purchase_price)}</p></div>
+        <div><p className="text-xs text-base-400">Prix de vente prévu</p><p className="font-medium text-base-100">{formatCurrency(product.expected_sale_price)}</p></div>
+        <div><p className="text-xs text-base-400">Prix de vente réel</p><p className="font-medium text-base-100">{formatCurrency(product.actual_sale_price)}</p></div>
+        <div>
+          <p className="text-xs text-base-400">Bénéfice</p>
+          <p className={cn("font-medium", (product.profit ?? potentialProfit ?? 0) >= 0 ? "text-positive" : "text-negative")}>
+            {formatCurrency(product.profit ?? potentialProfit)}
+          </p>
+        </div>
+        <div><p className="text-xs text-base-400">Plateforme</p><p className="font-medium text-base-100">{platformName}</p></div>
+        <div><p className="text-xs text-base-400">Emplacement</p><p className="font-medium text-base-100">{product.location || "—"}</p></div>
+      </Card>
+
+      {product.description && (
+        <Card><h3 className="mb-2 text-sm font-medium text-base-100">Description</h3><p className="text-sm text-base-300">{product.description}</p></Card>
+      )}
+      {product.notes && (
+        <Card><h3 className="mb-2 text-sm font-medium text-base-100">Notes</h3><p className="text-sm text-base-300">{product.notes}</p></Card>
+      )}
+
+      <Card>
+        <h3 className="mb-3 text-sm font-medium text-base-100">Historique</h3>
+        {product.events?.length ? (
+          <ul className="space-y-2 text-xs text-base-400">
+            {[...product.events].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((e) => (
+              <li key={e.id} className="flex justify-between"><span>{EVENT_LABELS[e.event_type] || e.event_type}</span><span>{formatDateLocal(e.created_at)}</span></li>
+            ))}
+          </ul>
+        ) : <p className="text-sm text-base-500">Aucun historique</p>}
+      </Card>
+
+      <div className="flex gap-2">
+        <Button variant="secondary" onClick={() => navigate("stock-edit", { id: product.id })}><EditIcon width={16} height={16} />Modifier</Button>
+        {product.status !== "ARCHIVE" && <Button variant="secondary" onClick={() => onArchive(product.id)}>Archiver</Button>}
+        <Button variant="danger" onClick={() => onDelete(product.id)}><TrashIcon width={16} height={16} />Supprimer</Button>
+      </div>
+
+      {sellOpen && (
+        <SellModal product={product} platforms={platforms} onClose={() => setSellOpen(false)}
+          onConfirm={(data) => { onSell(product.id, data); setSellOpen(false); }} />
+      )}
+    </div>
+  );
+}
+
+function SalesPage({ sales }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => sales.filter((s) => (q ? s.product_title.toLowerCase().includes(q.toLowerCase()) : true)), [sales, q]);
+  const totalRevenue = filtered.reduce((s, x) => s + x.sale_price, 0);
+  const totalProfit = filtered.reduce((s, x) => s + x.net_profit, 0);
+
+  return (
+    <div className="space-y-5 fade-in">
+      <div>
+        <h1 className="text-xl font-semibold text-base-100">Ventes</h1>
+        <p className="text-sm text-base-400">{filtered.length} vente(s) · {formatCurrency(totalRevenue)} de CA · {formatCurrency(totalProfit)} de bénéfice</p>
+      </div>
+
+      <div className="relative">
+        <SearchIcon width={16} height={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base-500" />
+        <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher une vente…"
+          className="w-full rounded-xl border border-base-600 bg-base-850 py-2.5 pl-9 pr-3.5 text-sm text-base-100 outline-none focus:border-accent" />
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState title="Aucune vente enregistrée" description="Vends un article depuis sa fiche produit pour la voir apparaître ici." />
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((s) => (
+            <Card key={s.id} className="flex items-center justify-between p-4">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-base-100">{s.product_title}</p>
+                <p className="text-xs text-base-400">{s.platform_name || "—"} · {formatDateLocal(s.sale_date)}</p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="text-sm font-semibold text-base-100">{formatCurrency(s.sale_price)}</p>
+                <p className={s.net_profit >= 0 ? "text-xs text-positive" : "text-xs text-negative"}>{formatCurrency(s.net_profit)} ({formatPercent(s.margin_percent)})</p>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function rank(sales, keyFn) {
+  const map = new Map();
+  sales.forEach((s) => { const k = keyFn(s); map.set(k, (map.get(k) || 0) + s.net_profit); });
+  return Array.from(map.entries()).sort(([, a], [, b]) => b - a).slice(0, 5);
+}
+function RankingCard({ title, items }) {
+  return (
+    <Card className="space-y-3">
+      <h3 className="text-sm font-medium text-base-100">{title}</h3>
+      {items.length === 0 ? <EmptyState title="Pas encore de données" /> : (
+        <ul className="space-y-2">
+          {items.map(([name, value], i) => (
+            <li key={name} className="flex items-center justify-between text-sm">
+              <span className="truncate text-base-300">{i + 1}. {name}</span>
+              <span className={value >= 0 ? "font-medium text-positive" : "font-medium text-negative"}>{formatCurrency(value)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+function AnalyticsPage({ products, sales }) {
+  const data = useMemo(() => {
+    const revenue = sales.reduce((s, x) => s + x.sale_price, 0);
+    const profit = sales.reduce((s, x) => s + x.net_profit, 0);
+    const avgMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
+    const avgBasket = sales.length > 0 ? revenue / sales.length : 0;
+    const stockValue = products.filter((p) => p.status === "EN_STOCK" || p.status === "RESERVE").reduce((s, p) => s + p.purchase_price, 0);
+    const byDay = new Map();
+    sales.forEach((s) => { const e = byDay.get(s.sale_date) || { revenue: 0, profit: 0 }; e.revenue += s.sale_price; e.profit += s.net_profit; byDay.set(s.sale_date, e); });
+    const chartData = Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date, ...v }));
+    return {
+      revenue, profit, avgMargin, avgBasket, stockValue, chartData,
+      byProduct: rank(sales, (s) => s.product_title || "—"),
+      byBrand: rank(sales, (s) => s.product_brand || "—"),
+      byPlatform: rank(sales, (s) => s.platform_name || "—"),
+      byCategory: rank(sales, (s) => products.find((p) => p.id === s.product_id)?.category || "—"),
+    };
+  }, [products, sales]);
+
+  return (
+    <div className="space-y-6 fade-in">
+      <div>
+        <h1 className="text-xl font-semibold text-base-100">Analytics</h1>
+        <p className="text-sm text-base-400">Performance globale de ton activité</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        <StatCard label="CA total" value={formatCurrency(data.revenue)} />
+        <StatCard label="Bénéfice total" value={formatCurrency(data.profit)} />
+        <StatCard label="Marge moyenne" value={formatPercent(data.avgMargin)} />
+        <StatCard label="Nombre de ventes" value={String(sales.length)} />
+        <StatCard label="Panier moyen" value={formatCurrency(data.avgBasket)} />
+        <StatCard label="Valeur du stock" value={formatCurrency(data.stockValue)} />
+      </div>
+
+      <PerformanceChart data={data.chartData} />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <RankingCard title="Produits les plus rentables" items={data.byProduct} />
+        <RankingCard title="Marques les plus rentables" items={data.byBrand} />
+        <RankingCard title="Plateformes les plus rentables" items={data.byPlatform} />
+        <RankingCard title="Catégories les plus rentables" items={data.byCategory} />
+      </div>
+    </div>
+  );
+}
+
+function PlatformManager({ platforms, onAdd, onDelete }) {
+  const [name, setName] = useState("");
+  const [fee, setFee] = useState("");
+  function submit(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    onAdd({ name: name.trim(), fee_percent: Number(fee) || 0 });
+    setName(""); setFee("");
+  }
+  return (
+    <div className="space-y-3">
+      {platforms.length ? (
+        <ul className="space-y-1 text-sm text-base-300">
+          {platforms.map((p) => (
+            <li key={p.id} className="flex items-center justify-between gap-2">
+              <span>{p.name}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-base-400">{p.fee_percent}% de frais</span>
+                <button type="button" onClick={() => onDelete(p.id, p.name)} className="text-xs text-base-500 hover:text-negative" aria-label={`Supprimer ${p.name}`}>Supprimer</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : <p className="text-sm text-base-400">Aucune plateforme configurée.</p>}
+      <form onSubmit={submit} className="flex gap-2 pt-2">
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex : Depop" className="flex-1" />
+        <Input value={fee} onChange={(e) => setFee(e.target.value)} type="number" min="0" max="100" step="0.1" placeholder="% frais" className="w-24" />
+        <Button type="submit" variant="secondary">Ajouter</Button>
+      </form>
+    </div>
+  );
+}
+
+function SettingsPage({ platforms, onAddPlatform, onDeletePlatform }) {
+  const toast = useToast();
+  return (
+    <div className="mx-auto max-w-xl space-y-5 fade-in">
+      <h1 className="text-xl font-semibold text-base-100">Paramètres</h1>
+
+      <Card className="space-y-2">
+        <h3 className="text-sm font-medium text-base-100">Compte</h3>
+        <p className="text-sm text-base-300">demo@resellai.app</p>
+        <p className="text-xs text-base-400">Plan : free · compte de démonstration</p>
+      </Card>
+
+      <Card className="space-y-3">
+        <h3 className="text-sm font-medium text-base-100">Plateformes de vente</h3>
+        <PlatformManager platforms={platforms} onAdd={onAddPlatform} onDelete={onDeletePlatform} />
+      </Card>
+
+      <Card className="space-y-2">
+        <h3 className="text-sm font-medium text-base-100">À venir</h3>
+        <p className="text-sm text-base-400">IA, marketplaces, automatisations, assistant et abonnements arrivent dans les prochaines versions.</p>
+      </Card>
+
+      <Button variant="secondary" full onClick={() => toast("Version de démonstration — pas d'authentification réelle")}>Se déconnecter</Button>
+    </div>
+  );
+}
+
+/* ============================== APP ============================== */
+
+function App() {
+  const [state, setState] = useState(() => seedData());
+  const [route, setRoute] = useState({ page: "dashboard", params: {} });
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  function showToast(msg) {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
+  }
+
+  function navigate(page, params) {
+    setRoute({ page, params: params || {} });
+    window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
+  }
+
+  function handleCreateProduct(data) {
+    const id = uid("prod");
+    const purchase_date = todayStr();
+    const product = {
+      id, ...data, actual_sale_price: null, profit: null, status: "EN_STOCK",
+      purchase_date, sale_date: null,
+      events: [{ id: uid("ev"), event_type: "CREATION", created_at: purchase_date }],
+    };
+    setState((s) => ({ ...s, products: [product, ...s.products] }));
+    showToast("Article ajouté au stock");
+    navigate("stock-detail", { id });
+  }
+
+  function handleUpdateProduct(id, data) {
+    setState((s) => ({
+      ...s,
+      products: s.products.map((p) => p.id === id ? {
+        ...p, ...data,
+        events: [...p.events, { id: uid("ev"), event_type: "MODIFICATION", created_at: todayStr() }],
+      } : p),
+    }));
+    showToast("Modifications enregistrées");
+    navigate("stock-detail", { id });
+  }
+
+  function handleSell(productId, saleData) {
+    setState((s) => {
+      const product = s.products.find((p) => p.id === productId);
+      if (!product) return s;
+      const totalFees = saleData.platform_fees + saleData.shipping_fees;
+      const netProfit = computeProfit(saleData.sale_price, product.purchase_price, totalFees);
+      const margin = computeMargin(netProfit, saleData.sale_price);
+      const platform = s.platforms.find((p) => p.id === saleData.platform_id);
+      const sale = {
+        id: uid("sale"), product_id: productId, product_title: product.title, product_brand: product.brand,
+        platform_id: saleData.platform_id, platform_name: platform?.name || null,
+        sale_price: saleData.sale_price, purchase_price: product.purchase_price,
+        platform_fees: saleData.platform_fees, shipping_fees: saleData.shipping_fees,
+        net_profit: netProfit, margin_percent: margin, sale_date: saleData.sale_date,
+      };
+      return {
+        ...s,
+        sales: [sale, ...s.sales],
+        products: s.products.map((p) => p.id === productId ? {
+          ...p, status: "VENDU", actual_sale_price: saleData.sale_price, profit: netProfit,
+          sale_date: saleData.sale_date, platform_id: saleData.platform_id,
+          events: [...p.events, { id: uid("ev"), event_type: "VENTE", created_at: saleData.sale_date }],
+        } : p),
+      };
+    });
+    showToast("Vente enregistrée");
+  }
+
+  function handleArchive(id) {
+    setState((s) => ({
+      ...s,
+      products: s.products.map((p) => p.id === id ? {
+        ...p, status: "ARCHIVE",
+        events: [...p.events, { id: uid("ev"), event_type: "ARCHIVAGE", created_at: todayStr() }],
+      } : p),
+    }));
+    showToast("Article archivé");
+  }
+
+  function handleDelete(id) {
+    if (!window.confirm("Supprimer définitivement cet article ? Cette action est irréversible.")) return;
+    setState((s) => ({ ...s, products: s.products.filter((p) => p.id !== id) }));
+    showToast("Article supprimé");
+    navigate("stock");
+  }
+
+  function handleAddPlatform(data) {
+    setState((s) => ({ ...s, platforms: [...s.platforms, { id: uid("plat"), ...data }] }));
+    showToast("Plateforme ajoutée");
+  }
+
+  function handleDeletePlatform(id, name) {
+    if (!window.confirm(`Supprimer la plateforme « ${name} » ? Les articles et ventes déjà associés ne seront pas supprimés.`)) return;
+    setState((s) => ({ ...s, platforms: s.platforms.filter((p) => p.id !== id) }));
+    showToast("Plateforme supprimée");
+  }
+
+  const currentProduct = route.params.id ? state.products.find((p) => p.id === route.params.id) : null;
+
+  let content = null;
+  if (route.page === "dashboard") content = <DashboardPage products={state.products} sales={state.sales} navigate={navigate} />;
+  else if (route.page === "stock") content = <StockPage products={state.products} navigate={navigate} initialStatus={route.params.status} />;
+  else if (route.page === "stock-new") content = <StockNewPage platforms={state.platforms} onCreate={handleCreateProduct} navigate={navigate} />;
+  else if (route.page === "stock-edit") content = <StockEditPage product={currentProduct} platforms={state.platforms} onUpdate={handleUpdateProduct} navigate={navigate} />;
+  else if (route.page === "stock-detail") content = <StockDetailPage product={currentProduct} platforms={state.platforms} navigate={navigate} onSell={handleSell} onArchive={handleArchive} onDelete={handleDelete} />;
+  else if (route.page === "sales") content = <SalesPage sales={state.sales} />;
+  else if (route.page === "analytics") content = <AnalyticsPage products={state.products} sales={state.sales} />;
+  else if (route.page === "settings") content = <SettingsPage platforms={state.platforms} onAddPlatform={handleAddPlatform} onDeletePlatform={handleDeletePlatform} />;
+
+  const navPage = route.page.startsWith("stock") ? "stock" : route.page;
+
+  return (
+    <ToastCtx.Provider value={showToast}>
+      <div className="flex min-h-screen bg-base-950 text-base-100">
+        <Sidebar page={navPage} navigate={navigate} />
+        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 pb-24 md:px-8 md:py-8 md:pb-8">
+          {content}
+        </main>
+        <BottomNav page={navPage} navigate={navigate} />
+        <ToastHost toast={toast} />
+      </div>
+    </ToastCtx.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
 
